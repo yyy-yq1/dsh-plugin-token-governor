@@ -224,3 +224,10 @@ test('outputLimitSuffix picks a shell-appropriate cap', () => {
   assert.equal(outputLimitSuffix('read', 400), null)
   assert.equal(firstShellToken('  Git status'), 'git')
 })
+
+test('outputLimitSuffix clamps tiny caps and rejects invalid line counts', () => {
+  assert.equal(outputLimitSuffix('shell', 1), ' | head -n 20')
+  assert.equal(outputLimitSuffix('powershell', 'abc'), null)
+  assert.equal(outputLimitSuffix('shell_pwsh', 120), ' | Select-Object -First 120')
+  assert.equal(firstShellToken(undefined), '')
+})
