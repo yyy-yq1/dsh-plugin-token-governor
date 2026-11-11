@@ -556,6 +556,22 @@ export function firstShellToken(command) {
 }
 
 /**
+ * Keep only boolean values for known switch ids. Used when reading the GUI
+ * switch override file, so a stale/hand-edited file cannot flip unknown keys or
+ * inject non-boolean values into runtime config.
+ */
+export function sanitizeSwitchOverrides(raw, validIds) {
+  const ids = new Set(Array.isArray(validIds) ? validIds : [])
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out = {}
+  for (const [id, value] of Object.entries(raw)) {
+    if (ids.size > 0 && !ids.has(id)) continue
+    if (typeof value === 'boolean') out[id] = value
+  }
+  return out
+}
+
+/**
  * Shell-specific suffix that caps a command's output to `lines`, or null when
  * the tool's shell is not supported. bash-like: `| head -n N`;
  * PowerShell: `| Select-Object -First N`.

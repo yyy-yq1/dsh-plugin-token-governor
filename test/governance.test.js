@@ -5,7 +5,7 @@ import {
   compactionEconomics, costOfUsage, costSplit, decideEffort, detectCacheAnomaly,
   emptyTotals, formatInt, formatMoney, isPeak, normalizeModelKey, resolvePrices,
   LEDGER_DEFAULT_KEEP_FILES, LEDGER_DEFAULT_MAX_BYTES, ledgerRotationPlan, priceTableAgeDays,
-  firstShellToken, isSimpleShellCommand, outputLimitSuffix,
+  firstShellToken, isSimpleShellCommand, outputLimitSuffix, sanitizeSwitchOverrides,
 } from '../governance.js'
 
 const BEIJING = (y, month, day, hour, minute = 0) => Date.UTC(y, month - 1, day, hour - 8, minute)
@@ -230,4 +230,14 @@ test('outputLimitSuffix clamps tiny caps and rejects invalid line counts', () =>
   assert.equal(outputLimitSuffix('powershell', 'abc'), null)
   assert.equal(outputLimitSuffix('shell_pwsh', 120), ' | Select-Object -First 120')
   assert.equal(firstShellToken(undefined), '')
+})
+
+test('sanitizeSwitchOverrides keeps only known boolean switches', () => {
+  assert.deepEqual(
+    sanitizeSwitchOverrides({ outputGuard: false, sourceLimits: true, stale: true, bad: 'yes' }, ['outputGuard', 'sourceLimits', 'bad']),
+    { outputGuard: false, sourceLimits: true },
+  )
+  assert.deepEqual(sanitizeSwitchOverrides(null, ['a']), {})
+  assert.deepEqual(sanitizeSwitchOverrides([1], ['a']), {})
+  assert.deepEqual(sanitizeSwitchOverrides({ a: 1, b: true }, []), { b: true })
 })

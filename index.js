@@ -30,7 +30,7 @@ import {
   encodeUniformJsonArray, estimateTextTokens, formatInt, formatMoney, isPeak, resolvePrices, TOKEN_RATES,
   changedToolLines, lineSimilarity, normalizeToolLine,
   LEDGER_DEFAULT_KEEP_FILES, LEDGER_DEFAULT_MAX_BYTES, ledgerRotationPlan, priceTableAgeDays,
-  firstShellToken, isSimpleShellCommand, outputLimitSuffix,
+  firstShellToken, isSimpleShellCommand, outputLimitSuffix, sanitizeSwitchOverrides,
 } from './governance.js'
 
 export const name = 'token-governor'
@@ -254,6 +254,8 @@ const DEFAULTS = {
   },
   snapshotPath: '',
   snapshotIntervalMs: 1500,
+  // Where GUI switch overrides are persisted (empty = ~/.dsh/token-governor/switches.json).
+  switchOverridesPath: '',
   apiEnabled: true,
   apiPath: '/token-governor',
 }
@@ -2608,6 +2610,11 @@ export function apply(ctx, config) {
     add('ledger:rotation', maxBytes > 0 ? 'ok' : 'warn',
       maxBytes > 0 ? `超过 ${(maxBytes / 1024 / 1024).toFixed(1)} MB 轮转，保留 ${keepFiles} 份归档` : 'maxBytes<=0：账本不会轮转，会无限增长')
 
+    const overriddenIds = Object.keys(switchOverrides)
+    add('switches', 'ok',
+      `GUI 开关 ${SWITCH_SPECS.length} 项，其中 ${overriddenIds.length} 项被面板改过并持久化` +
+      `${overriddenIds.length > 0 ? `（${overriddenIds.join(', ')}）` : ''} → ${switchOverridePath()}`)
+
     const age = priceTableAgeDays(PRICE_VERSION, now)
     const staleDays = Number(cfg.priceStaleDays ?? 90)
     if (age === null) add('prices', 'warn', `价格版本 ${PRICE_VERSION} 无法解析，请检查 PRICE_VERSION`)
@@ -3013,9 +3020,52 @@ export function apply(ctx, config) {
       label: spec.label,
       scope: spec.scope,
       on: spec.get() === true,
+      overridden: Object.prototype.hasOwnProperty.call(switchOverrides, spec.id),
       onHow: spec.onHow,
       offHow: spec.offHow,
     }))
+  }
+
+  // GUI switch overrides persist across restarts (and win over bundle config, so
+  // clicking a switch is not undone by the next DSH launch).
+  const switchOverridePath = () => {
+    const configured = cfg.switchOverridesPath
+    if (typeof configured === 'string' && configured.trim().length > 0) return configured.trim()
+    return path.join(os.homedir(), '.dsh', 'token-governor', 'switches.json')
+  }
+  let switchOverrides = {}
+  function loadSwitchOverrides() {
+    try {
+      const file = switchOverridePath()
+      if (!fs.existsSync(file)) return
+      switchOverrides = sanitizeSwitchOverrides(
+        JSON.parse(fs.readFileSync(file, 'utf8')),
+        SWITCH_SPECS.map((spec) => spec.id),
+      )
+    } catch (error) {
+      console.error('token-governor: switch override load failed', error)
+      switchOverrides = {}
+    }
+  }
+  function saveSwitchOverrides() {
+    try {
+      const file = switchOverridePath()
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const tmp = `${file}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify(switchOverrides, null, 1), 'utf8')
+      fs.renameSync(tmp, file)
+    } catch (error) {
+      console.error('token-governor: switch override save failed', error)
+    }
+  }
+  loadSwitchOverrides()
+  for (const spec of SWITCH_SPECS) {
+    if (typeof switchOverrides[spec.id] !== 'boolean') continue
+    try {
+      spec.set(switchOverrides[spec.id])
+    } catch (error) {
+      console.error(`token-governor: switch override apply failed (${spec.id})`, error)
+    }
   }
 
   function snapshotPayload() {
@@ -3244,6 +3294,8 @@ export function apply(ctx, config) {
               const on = patch.on === true || patch.on === 'true'
               try {
                 spec.set(on)
+                switchOverrides[spec.id] = on
+                saveSwitchOverrides()
                 sendJson(res, 200, { ok: true, switches: switchState(), snapshot: snapshotPayload() })
               } catch (error) {
                 sendJson(res, 500, { ok: false, error: String(error?.message ?? error) })
