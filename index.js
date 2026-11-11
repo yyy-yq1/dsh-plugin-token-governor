@@ -3394,7 +3394,7 @@ export function apply(ctx, config) {
     ctx.commands.register({
       name: 'token',
       description: CMD_DESCRIPTION,
-      input: { hint: '[auto on|auto off|prices|doctor|all|reset|handoff|new|style on|style off|ab on|ab off]' },
+      input: { hint: '[auto on|auto off|prices|doctor|trim|limit on|limit off|out on|out off|all|reset|handoff|new|style on|style off|ab on|ab off]' },
       handler: async ({ agent, rawInput }) => {
         const input = String(rawInput ?? '').trim().toLowerCase()
         const sessionId = sessionIdOf(agent)
@@ -3423,6 +3423,20 @@ export function apply(ctx, config) {
             kind: 'success',
             text: `输出治理：已${input === 'out on' ? '开启' : '关闭'}——短输出续步降 effort（默认 low），出错升级、轮末恢复。` +
               '效果用 /token 里的“输出治理”行对比（降档后 vs 其他平均输出）。',
+          }
+        }
+        if (input === 'limit on' || input === 'limit off') {
+          const on = input === 'limit on'
+          cfg.sourceLimits.enabled = on
+          return {
+            kind: 'success',
+            text: on
+              ? '源头限流：已开启（本次运行生效，重启后回到配置值）。' +
+                '只对单条简单命令追加输出上限（bash→head -n、pwsh→Select-Object -First ' +
+                `${cfg.sourceLimits.bashHeadLines ?? 400}）；退出码语义会变、截断内容不落盘。` +
+                '用 /token doctor 的 sourceLimits 行确认改写次数。持久化：profile 的 cordis.patch.yml 里 ' +
+                'token-governor 行加 sourceLimits.enabled: true。'
+              : '源头限流：已关闭。',
           }
         }
         if (input === 'handoff') return { kind: 'success', text: sessionId === undefined ? '暂无会话数据。' : reportHandoff(sessionId) }
@@ -3484,7 +3498,7 @@ export function apply(ctx, config) {
           }
           return { kind: 'success', text: '本会话的 token 管家统计已清零（不影响真实账单）。' }
         }
-        return { kind: 'error', text: `未知参数 "${rawInput}"。可用：/token、/token doctor、/token all、/token prices、/token auto on|off、/token reset` }
+        return { kind: 'error', text: `未知参数 "${rawInput}"。可用：/token、/token doctor、/token trim、/token limit on|off、/token out on|off、/token all、/token prices、/token auto on|off、/token reset` }
       },
     })
   } catch (error) {

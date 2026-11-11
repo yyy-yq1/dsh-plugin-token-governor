@@ -99,6 +99,7 @@ plugin_manager action=install_bundle target="<你克隆的路径>/dsh-plugin-tok
 /token doctor       # 自检：钩子/服务/账本/价格表是否真的在采数据（排障先跑这个）
 /token trim         # 计算"从未调用的工具"，对之后的新会话裁剪 schema 固定税
 /token out on|off   # 短输出续步降 effort（默认开，轮末/出错自动恢复）
+/token limit on|off # 源头限流开关（默认关，实验；仅本次运行生效）
 /token all          # 进程启动以来
 /token prices       # 官方价目表 + 当前高峰/空闲
 /token new          # 交接单 + 开新会话（大上下文换任务的省钱主力）
@@ -154,6 +155,23 @@ POST /token-governor/api/new-session?confirm=true
 | ③ | **短输出续步降 effort** | 开 | 上一步输出 <250 tokens（典型"只调个工具"）→ 后续步骤降为 `low`；出错升级、轮末恢复；`/token` 显示降档 vs 其他平均输出 |
 | ④ | **工具固定税裁剪** | 手动 | `/token trim` 找出"声明了但从没调用"的工具，对**新会话**禁用（不动运行中会话的工具声明，避免缓存失效） |
 | ⑤ | **源头限流**（实验） | **关** | 对 `cat/ls/git/grep…` 这类只读的**单条简单命令**（不含管道/重定向/`&&`/`;`/反引号）追加输出上限：bash→`\| head -n 400`，pwsh→`\| Select-Object -First 400`；会改变退出码语义，且截断内容不可回取 |
+
+**⑤ 的开关在哪**（它没有 GUI 开关，只有命令 + 配置两处）：
+
+```bash
+/token limit on     # 立即生效（仅本次运行），/token doctor 可看 sourceRewrites 计数
+/token limit off    # 关掉
+```
+
+持久化：在 **profile 的 `cordis.patch.yml`**（不是插件包里的那个）追加一行覆盖：
+
+```yaml
+- id: token-governor
+  config:
+    sourceLimits:
+      enabled: true
+```
+
 
 > ②③ 都不改写历史：压缩发生在结果进入上下文时，effort 不进 prompt，缓存命中不受影响。
 > ③ 的收益需要你观察 `/token` 里"输出治理"那行的两组平均输出；若降档后没变小，就 `/token out off`。
