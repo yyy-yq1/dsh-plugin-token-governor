@@ -1,0 +1,65 @@
+{
+  "name": "dsh-plugin-token-governor",
+  "version": "0.18.0",
+  "private": false,
+  "type": "module",
+  "description": "DeepSeek Harness token-cost governor: real billing meter, prompt-cache sentinel, cache-safe reasoning-effort scheduling, and lossless tool-output compression.",
+  "license": "MIT",
+  "author": "yyy-yq1",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "token",
+    "cost",
+    "prompt-cache",
+    "llm-observability",
+    "compression"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yyy-yq1/dsh-plugin-token-governor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yyy-yq1/dsh-plugin-token-governor/issues"
+  },
+  "homepage": "https://github.com/yyy-yq1/dsh-plugin-token-governor#readme",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./governance": "./governance.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "governance.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "docs/",
+    "test/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "scripts": {
+    "test": "node --test test/encoder.test.js test/helpers.test.js test/governance.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

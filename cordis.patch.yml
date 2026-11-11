@@ -1,0 +1,156 @@
+# Bundle patch for dsh-plugin-token-governor.
+# Loaded as a profile bundle layer through package.json `dsh.bundle.patch`.
+# Every owned config key is restated so a later layer can override individual
+# values without redefining the row.
+- insert:
+    - id: token-governor
+      name: dsh-plugin-token-governor
+      config:
+        enabled: true
+        currency: CNY
+        # Per-model overrides: { "<model id>": { hit, miss, out } } in the
+        # active currency per 1M tokens, optionally { peak: {...}, off: {...} }.
+        modelPrices: {}
+        # Extra Beijing-time calendar dates (YYYY-MM-DD) billed at off-peak.
+        holidayDates: []
+        effortPolicy:
+          # Measured on deepseek-flash: max->high on continuation steps saves
+          # ~0% output tokens, so the policy ships OFF. Set true only after an
+          # A/B on your own workload (and prefer continuationEffort: low/off).
+          enabled: false
+          continuationEffort: high
+          onlyDownshiftMax: true
+          escalateOnError: true
+          escalateOnToolError: true
+          restoreAtTurnEnd: true
+          firstStepEffort: null
+          switchGuard:
+            enabled: true
+            # Skip downshifts above this context size (0 = no limit) and roll
+            # back automatically when a switch is followed by a cache collapse.
+            maxContextTokens: 250000
+            minContextTokens: 5000
+            invalidationRatio: 0.5
+            autoRollback: true
+        contextAdvice:
+          # Context volume is paid every request; above this size a NEW task
+          # usually belongs in a new session.
+          enabled: true
+          minContextTokens: 150000
+          newSessionExpectedTokens: 25000
+        cacheGovernor:
+          # A gap this long makes the provider prefix cache likely cold.
+          idleColdMinutes: 30
+          # Warn about cold-resume / invalidation cost only above this prompt size.
+          warnPromptTokens: 20000
+          # Ignore misses below this prompt size when attributing causes.
+          minPromptTokens: 5000
+        toolPolicy:
+          enabled: true
+          # While a session is live, adding a tool changes its tool declarations
+          # and invalidates the provider prefix cache (one full prompt miss).
+          # Defer the report tool to the next load; /token still works.
+          deferWhenSessionsActive: true
+        toolBudget:
+          # Static per-session schema trim, applied at agent creation only.
+          # Fill `deny` with tools the report marks as unused-but-large.
+          enabled: false
+          deny: []
+        budget:
+          # Same-task-cheaper protection: when a turn/session reaches
+          # softRatio of the cost cap, downshift reasoning effort for the
+          # following steps. Off by default; set mode: turn / session.
+          mode: 'off'
+          maxTurnCost: 0
+          maxSessionCost: 0
+          softRatio: 0.8
+          downshiftEffort: 'low'
+        terseStyle:
+          # Concise output: no repeated explanations unless the user asks for
+          # them. Applies to NEW agents only (cache-safe).
+          enabled: true
+          mode: concise
+          systemPromptText: null
+        tsvCodec:
+          # Lossless JSON->TSV re-encoding for uniform arrays at tool-result
+          # write time (measured: 67.5% of minified JSON tokens, zero loss).
+          enabled: true
+          minRows: 4
+          minSavingRatio: 0.3
+          maxBytes: 200000
+        toolOutput:
+          # Merged from dsh-plugin-save-token: reversible structure-aware
+          # compression of oversized tool results (full text spilled to disk).
+          compressEnabled: true
+          minBytes: 1400
+          errorMinBytes: 6000
+          minSavingBytes: 500
+          keepRatioMax: 0.7
+          headLines: 120
+          tailLines: 60
+          minLines: 60
+          longLineChars: 400
+          errorLineCap: 25
+          tabularEnabled: true
+          tabularHeadRows: 40
+          tabularTailRows: 20
+          tabularTargetRatio: 0.5
+          tabularMaxStride: 256
+          # Leave results at/above this estimated-token budget to the official
+          # @deepseek-ai/dsh-spill-policy so the two never rewrite the same result.
+          spillPolicyMaxInlineTokens: 12500
+          dedupeEnabled: true
+          dedupeTtlMs: 600000
+          spillRetentionHours: 72
+          maxSpillFilesPerSession: 40
+          nearDedupeEnabled: true
+          nearDedupeMinSimilarity: 0.9
+          nearDedupeMaxDiffLines: 12
+          nearDedupeTtlMs: 900000
+          readTargetRatio: 0.4
+        guard:
+          softTurnCost: 0
+        apiToken: ''
+        terseVerify:
+          enabled: true
+          cooldownMs: 60000
+        priceStaleDays: 90
+        decisionRetainRatio: 0.16
+        styleExperiments:
+          enabled: false
+          assign: alternate
+          variants:
+            - concise
+            - telegraph
+            - dense
+        subagentRoute:
+          enabled: false
+          provider: deepseek-account
+          model: deepseek-flash
+          effort: null
+        compactionDigest:
+          enabled: true
+          minContextTokens: 150000
+        readReuse:
+          enabled: true
+        compressionBudget:
+          aggressiveAboveTokens: 4000
+          aggressiveTargetRatio: 0.35
+        growth:
+          enabled: true
+          maxEntries: 80
+        newSession:
+          enabled: true
+          provider: deepseek-account
+          model: deepseek-flash
+        cacheAnomaly:
+          enabled: true
+          minPromptTokens: 5000
+          hitRateFloor: 0.5
+          causeWindowMs: 120000
+        # Empty = ephemeral snapshot in the OS temp directory. Set an absolute
+        # path to keep a durable JSON snapshot.
+        snapshotPath: ''
+        snapshotIntervalMs: 1500
+        apiEnabled: true
+        apiPath: /token-governor

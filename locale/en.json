@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Token Governor",
+    "description": "Meters real DeepSeek token cost (cache hit/miss, thinking, peak/off-peak), guards the prompt cache, and schedules reasoning effort on tool-continuation steps."
+  }
+}

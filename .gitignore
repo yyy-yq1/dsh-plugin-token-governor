@@ -1,0 +1,18 @@
+# dependencies
+node_modules/
+
+# local runtime artifacts (ledger, snapshots, spill files, logs)
+*.log
+*.jsonl
+*.snapshot.json
+dsh-token-governor-spill/
+token-governor/
+
+# packed archives
+*.zip
+*.tgz
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
