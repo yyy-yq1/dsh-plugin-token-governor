@@ -64,6 +64,15 @@ window.__ModuleLoader__.load({
         handoffBtn: '生成交接单',
         newSessionBtn: '换新会话（省 ¥）',
         newSessionOk: '已建新会话 {id}，交接单已投递',
+        switchesTitle: '开关（点右侧按钮切换，开/关各有什么用它写在行内）',
+        switchesHint: '这些是运行时开关，重启后回到 profile 的 cordis.patch.yml 里的配置值。',
+        scopeImmediate: '立即生效',
+        scopeNewAgent: '仅新会话生效',
+        scopeRestart: '重启生效',
+        switchOn: '开',
+        switchOff: '关',
+        onHowPrefix: '开：',
+        offHowPrefix: '关：',
         verifyBtn: '验证简洁风格注入',
         totalsCard: '总消耗 Tokens（跨会话/跨重启累计）',
         totalTokens: '总消耗 Tokens',
@@ -163,6 +172,15 @@ window.__ModuleLoader__.load({
         handoffBtn: 'Handoff note',
         newSessionBtn: 'New session (save ¥)',
         newSessionOk: 'New session {id} created, handoff posted',
+        switchesTitle: 'Switches (click to toggle; each row states what on/off does)',
+        switchesHint: 'Runtime switches: restarting returns to the value in the profile cordis.patch.yml.',
+        scopeImmediate: 'immediate',
+        scopeNewAgent: 'new sessions only',
+        scopeRestart: 'restart required',
+        switchOn: 'ON',
+        switchOff: 'OFF',
+        onHowPrefix: 'ON: ',
+        offHowPrefix: 'OFF: ',
         verifyBtn: 'Verify terse-style injection',
         totalsCard: 'Total tokens (all sessions, persisted)',
         totalTokens: 'Total consumed tokens',
@@ -497,6 +515,15 @@ window.__ModuleLoader__.load({
             : T('error')))
           .catch(() => setNewSessionText(T('error')))
       }
+      // Every runtime switch from the host snapshot, toggled via POST /switch.
+      const switches = Array.isArray(snapshot && snapshot.switches) ? snapshot.switches : []
+      const [switchNote, setSwitchNote] = React.useState('')
+      const toggleSwitch = (item) => {
+        setSwitchNote('…')
+        apiPost('/switch', { id: item.id, on: !item.on })
+          .then(() => { setSwitchNote(''); load() })
+          .catch(() => setSwitchNote(T('error')))
+      }
 
       const kpis = [        { label: T('hitRate'), value: hitPct === undefined ? '—' : Number(hitPct).toFixed(2) + '%', sub: T('session') + ' ' + (session ? session.session : '—') },
         { label: T('perReq'), value: perRequest > 0 ? fmtMoney(perRequest) : '—', sub: T('perReqSub', { k: fmtMoney(perRequest * 1000) }) },
@@ -530,6 +557,37 @@ window.__ModuleLoader__.load({
           h('div', { className: 'tg-s' }, kpi.sub),
         ))) : null,
         h('div', { className: 'tg-grid' },
+        switches.length > 0 ? h('div', { className: 'tg-card tg-wide' },
+          h('div', { className: 'tg-title' }, T('switchesTitle')),
+          h('div', { className: 'tg-dim', style: { marginBottom: '6px' } }, T('switchesHint')),
+          switches.map((item) => h('div', {
+            key: item.id,
+            className: 'tg-row',
+            style: {
+              alignItems: 'flex-start',
+              gap: '12px',
+              padding: '8px 0',
+              borderTop: '1px solid var(--dsw-alias-border-l1,#e5e7eb)',
+            },
+          },
+            h('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+              h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+                h('strong', null, item.label),
+                h('span', { className: 'tg-tag' },
+                  item.scope === 'new-agent' ? T('scopeNewAgent')
+                    : item.scope === 'restart' ? T('scopeRestart') : T('scopeImmediate')),
+              ),
+              h('div', { className: 'tg-dim', style: { marginTop: '2px' } }, T('onHowPrefix') + item.onHow),
+              h('div', { className: 'tg-dim' }, T('offHowPrefix') + item.offHow),
+            ),
+            h('button', {
+              className: 'tg-btn' + (item.on ? ' tg-primary' : ''),
+              type: 'button',
+              onClick: () => toggleSwitch(item),
+            }, item.on ? T('switchOn') : T('switchOff')),
+          )),
+          switchNote ? h('div', { className: 'tg-dim' }, switchNote) : null,
+        ) : null,
         rows.length > 0 ? h('div', { className: 'tg-card' },
           h('div', { className: 'tg-title' }, T('source')),
           h('table', { className: 'tg-table' },

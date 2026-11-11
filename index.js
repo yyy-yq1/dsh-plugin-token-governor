@@ -2815,6 +2815,209 @@ export function apply(ctx, config) {
     }
   }
 
+  // ------------------------------------------------------------ GUI switches
+  // Every user-facing runtime switch with an explicit on/off meaning, so the
+  // panel never asks the user to guess. `scope` tells when the change lands:
+  // immediate | new-agent | restart.
+  const SWITCH_SPECS = [
+    {
+      id: 'outputGuard',
+      label: '短步骤降思考（输出治理）',
+      scope: 'immediate',
+      get: () => cfg.outputGuard?.enabled !== false,
+      set: (on) => { cfg.outputGuard.enabled = on },
+      onHow: '上一步主输出少于 250 tokens 时，把后续步骤的思考强度降为 low——省的是输出 token（约占账单 36%）。',
+      offHow: '每步都用你选的思考强度；输出更充分，但“只调个工具”的短步骤也按原强度付费。',
+    },
+    {
+      id: 'sourceLimits',
+      label: '源头限流（实验）',
+      scope: 'immediate',
+      get: () => cfg.sourceLimits?.enabled === true,
+      set: (on) => { cfg.sourceLimits.enabled = on },
+      onHow: '对单条简单只读命令（cat/git/grep…）追加输出上限：bash→head -n 400、pwsh→Select-Object -First 400，超大输出根本不进上下文。',
+      offHow: '命令原样执行；超长输出由事后压缩处理，全文可回取（更安全但多花一点 token）。',
+    },
+    {
+      id: 'compress',
+      label: '工具输出压缩',
+      scope: 'immediate',
+      get: () => cfg.toolOutput?.compressEnabled !== false,
+      set: (on) => { cfg.toolOutput.compressEnabled = on },
+      onHow: '超大结果只保留头尾+错误行，全文落盘可用 locator 回取；实测 300 行输出省 69% 上下文。',
+      offHow: '工具输出原样进上下文（TSV/去重仍生效），信息最完整但上下文涨得快。',
+    },
+    {
+      id: 'tsv',
+      label: '无损 TSV 重编码',
+      scope: 'immediate',
+      get: () => cfg.tsvCodec?.enabled !== false,
+      set: (on) => { cfg.tsvCodec.enabled = on },
+      onHow: '均匀 JSON 表格转成 TSV，同数据省 32%~59% token，**零损失可逆**。',
+      offHow: '保持原 JSON 格式，模型看到的字节更“原生”，但更费 token。',
+    },
+    {
+      id: 'dedupe',
+      label: '重复输出去重',
+      scope: 'immediate',
+      get: () => cfg.toolOutput?.dedupeEnabled !== false,
+      set: (on) => { cfg.toolOutput.dedupeEnabled = on },
+      onHow: '字节完全相同的结果用一段 stub 引用上文，不重复占上下文。',
+      offHow: '重复命令的完整输出也照常保留（排查时更直观）。',
+    },
+    {
+      id: 'nearDedupe',
+      label: '近重复压缩',
+      scope: 'immediate',
+      get: () => cfg.toolOutput?.nearDedupeEnabled !== false,
+      set: (on) => { cfg.toolOutput.nearDedupeEnabled = on },
+      onHow: '99% 相同（差异≤12 行）的输出只列变更行，实测可省 99%。',
+      offHow: '每次都保留完整输出。',
+    },
+    {
+      id: 'readReuse',
+      label: '读取复用',
+      scope: 'immediate',
+      get: () => cfg.readReuse?.enabled !== false,
+      set: (on) => { cfg.readReuse.enabled = on },
+      onHow: '同一文件同一区间、内容未变时，第二次 read 只返回引用，不重复占上下文。',
+      offHow: '每次 read 都完整返回内容（改文件后重复读也不会被引用）。',
+    },
+    {
+      id: 'effort',
+      label: '思考强度调度',
+      scope: 'immediate',
+      get: () => cfg.effortPolicy?.enabled === true,
+      set: (on) => { setAutoPolicy(on) },
+      onHow: '续步把 max 降为 high（实测在 flash 上≈0% 输出差异，默认关；想省钱建议试 low/off 并做 A/B）。',
+      offHow: '完全不动你的思考强度设置，最安全。',
+    },
+    {
+      id: 'cacheAnomaly',
+      label: '缓存失效告警',
+      scope: 'immediate',
+      get: () => cfg.cacheAnomaly?.enabled !== false,
+      set: (on) => { cfg.cacheAnomaly.enabled = on },
+      onHow: '命中率骤降时记录“多付了多少 tokens / 多少钱 + 归因”，能抓到 ¥0.3~0.6/次的事故。',
+      offHow: '不做异常检测（真实计费仍照常记录）。',
+    },
+    {
+      id: 'contextAdvice',
+      label: '换会话建议',
+      scope: 'immediate',
+      get: () => cfg.contextAdvice?.enabled !== false,
+      set: (on) => { cfg.contextAdvice.enabled = on },
+      onHow: '上下文超过 15 万时，在新任务第一步提示“新开会话每请求约省 ¥X”。',
+      offHow: '不主动提示（面板里仍能手动看到决策行）。',
+    },
+    {
+      id: 'compactionDigest',
+      label: '压缩前交接提示',
+      scope: 'immediate',
+      get: () => cfg.compactionDigest?.enabled !== false,
+      set: (on) => { cfg.compactionDigest.enabled = on },
+      onHow: '接近压缩水位时提示用“交接单+新会话”替代 /compact（压缩一次约 ¥0.16 且回本慢）。',
+      offHow: '不提示，压缩由官方机制决定。',
+    },
+    {
+      id: 'growth',
+      label: '上下文增长归因',
+      scope: 'immediate',
+      get: () => cfg.growth?.enabled !== false,
+      set: (on) => { cfg.growth.enabled = on },
+      onHow: '按请求记录 prompt 增量，报告显示“工具结果贡献了多少”和最近 5 步增量。',
+      offHow: '不记录（几乎不省 token，只省一点内存/CPU）。',
+    },
+    {
+      id: 'toolBudget',
+      label: '工具固定税裁剪',
+      scope: 'new-agent',
+      get: () => cfg.toolBudget?.enabled === true,
+      set: (on) => { cfg.toolBudget.enabled = on },
+      onHow: '对**新建会话**禁用 deny 名单里的工具（先用 /token trim 生成名单），省每个请求的 schema 固定税。',
+      offHow: '新会话保留全部工具声明（当前运行中的会话无论如何都不变）。',
+    },
+    {
+      id: 'newSession',
+      label: '一键换会话',
+      scope: 'immediate',
+      get: () => cfg.newSession?.enabled !== false,
+      set: (on) => { cfg.newSession.enabled = on },
+      onHow: '面板按钮与 /token new 可用：建新会话并投递交接单，大上下文换任务单请求可省 90%+。',
+      offHow: '禁用按钮和 /token new（只保留 /token handoff 复制交接单）。',
+    },
+    {
+      id: 'terseStyle',
+      label: '简洁输出风格',
+      scope: 'new-agent',
+      get: () => cfg.terseStyle?.enabled !== false,
+      set: (on) => { cfg.terseStyle.enabled = on },
+      onHow: '新建会话注入“直接给结论、不重复解释”的系统段，省输出 token（约占账单 36%）。',
+      offHow: '不注入风格段，模型默认表达更啰嗦。',
+    },
+    {
+      id: 'styleExperiments',
+      label: '输出风格 A/B 实验',
+      scope: 'new-agent',
+      get: () => cfg.styleExperiments?.enabled === true,
+      set: (on) => { cfg.styleExperiments.enabled = on },
+      onHow: '新会话轮流分配 concise/telegraph/dense 风格，报告对比各风格平均输出与失败率。',
+      offHow: '所有新会话都用同一默认风格（terseStyle）。',
+    },
+    {
+      id: 'subagentRoute',
+      label: '子会话降档路由',
+      scope: 'new-agent',
+      get: () => cfg.subagentRoute?.enabled === true,
+      set: (on) => { cfg.subagentRoute.enabled = on },
+      onHow: '新建子 agent 自动切到 deepseek-flash（子会话没有缓存可打，降档便宜 4.5x）。',
+      offHow: '子 agent 沿用当前会话的模型。',
+    },
+    {
+      id: 'budget',
+      label: '预算保护',
+      scope: 'immediate',
+      get: () => cfg.budget?.mode !== undefined && cfg.budget.mode !== 'off',
+      set: (on) => {
+        if (on) {
+          cfg.budget.mode = 'session'
+          if (!(Number(cfg.budget.maxSessionCost) > 0)) cfg.budget.maxSessionCost = 2
+        } else cfg.budget.mode = 'off'
+      },
+      onHow: '本会话花费到上限的 80% 后，后续续步降为 low effort（默认上限 ¥2，可改 config），任务继续但不再失控。',
+      offHow: '不按预算干预，花多少算多少。',
+    },
+    {
+      id: 'ledger',
+      label: '持久账本',
+      scope: 'immediate',
+      get: () => cfg.ledger?.enabled !== false,
+      set: (on) => { cfg.ledger.enabled = on },
+      onHow: '每个请求追加一行到 ~/.dsh/token-governor/ledger.jsonl，跨会话跨重启累计（面板“总消耗”来源）。',
+      offHow: '不落盘，只保留本次运行内存统计，重启后总消耗清零。',
+    },
+    {
+      id: 'api',
+      label: 'HTTP API',
+      scope: 'restart',
+      get: () => cfg.apiEnabled !== false,
+      set: (on) => { cfg.apiEnabled = on },
+      onHow: '开启 /token-governor/api/*（面板与自建看板依赖它）。',
+      offHow: '关闭 HTTP 接口；/token 命令与真实计费不受影响。改动需重启插件才生效。',
+    },
+  ]
+
+  function switchState() {
+    return SWITCH_SPECS.map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      scope: spec.scope,
+      on: spec.get() === true,
+      onHow: spec.onHow,
+      offHow: spec.offHow,
+    }))
+  }
+
   function snapshotPayload() {
     return {
       plugin: 'dsh-plugin-token-governor',
@@ -2839,6 +3042,7 @@ export function apply(ctx, config) {
         apiEnabled: cfg.apiEnabled,
       },
       tool: { registered: toolRegistered, deferred: toolDeferred },
+      switches: switchState(),
       global: {
         totals: globalTotals,
         tools: globalToolCalls,
@@ -3027,6 +3231,23 @@ export function apply(ctx, config) {
                 }
               }
               sendJson(res, 200, { ok: true, applied, toolBudget: cfg.toolBudget, snapshot: snapshotPayload() })
+              return
+            }
+            if (req.method === 'POST' && clean.endsWith('/api/switch')) {
+              const body = await readBody(req)
+              const patch = parsePatch(body, new URL(url, 'http://localhost').searchParams)
+              const spec = SWITCH_SPECS.find((entry) => entry.id === patch.id)
+              if (spec === undefined) {
+                sendJson(res, 404, { ok: false, error: `unknown switch: ${String(patch.id)}` })
+                return
+              }
+              const on = patch.on === true || patch.on === 'true'
+              try {
+                spec.set(on)
+                sendJson(res, 200, { ok: true, switches: switchState(), snapshot: snapshotPayload() })
+              } catch (error) {
+                sendJson(res, 500, { ok: false, error: String(error?.message ?? error) })
+              }
               return
             }
             if (req.method === 'POST' && clean.endsWith('/api/budget')) {

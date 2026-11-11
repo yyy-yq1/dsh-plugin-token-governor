@@ -136,7 +136,19 @@ POST /token-governor/api/new-session?confirm=true
 
 ## 面板
 
-设置 →「缓存与成本」：KPI（每请求 ¥、命中占比）、总消耗 Tokens（跨会话跨重启累计）、分会话明细、未命中来源、决策与验证卡片、上下文增长。
+设置 →「缓存与成本」：KPI（每请求 ¥、命中占比）、总消耗 Tokens（跨会话跨重启累计）、分会话明细、未命中来源、决策与验证卡片、上下文增长，以及 **20 个运行时开关**。
+
+**开关面板**：每个开关一行，行内直接写明「开：…」「关：…」，并标注生效范围：
+
+| 范围 | 含义 |
+|---|---|
+| 立即生效 | 下一个请求就按新值执行 |
+| 仅新会话生效 | 只影响之后创建的会话；当前会话的缓存前缀不会被破坏 |
+| 重启生效 | 需要重启 DSH 才会重新注册（HTTP API） |
+
+覆盖的开关：短步骤降思考、源头限流、工具输出压缩、无损 TSV、重复去重、近重复压缩、读取复用、思考强度调度、缓存失效告警、换会话建议、压缩前交接提示、上下文增长归因、工具固定税裁剪、一键换会话、简洁输出风格、输出风格 A/B、子会话降档路由、预算保护、持久账本、HTTP API。
+
+> 这些是**运行时开关**（重启回到 profile `cordis.patch.yml` 里的值）；要长期生效请改该文件，面板只负责即开即用和解释。
 
 ```
 ┌ 缓存与成本 ────────────────────────────────┐
@@ -245,9 +257,21 @@ POST /token-governor/api/new-session?confirm=true
 ## 版本记录
 
 <details>
+<summary>v0.21.0 — 所有开关进 GUI</summary>
+
+面板新增开关总表（20 项，每项写明开启/关闭的效果与生效范围）；宿主新增 `POST /api/switch`（白名单）与 `snapshot.switches`。单测 28 项。
+</details>
+
+<details>
+<summary>v0.20.2 — 源头限流开关</summary>
+
+新增 `/token limit on|off` 运行时开关；文档补充持久化位置（profile 的 `cordis.patch.yml`）。
+</details>
+
+<details>
 <summary>v0.20.1 — 源头限流补强</summary>
 
-⑤ 收紧触发条件（单条简单命令：排除管道/重定向/`&&`/`;`/换行/反引号/`$()`）、支持 pwsh（`Select-Object -First N`）、新增 `diagnostics.sourceRewrites` 计数并接进 `/token doctor`。单测 28 项。
+⑤ 收紧触发条件（单条简单命令：排除管道/重定向/`&&`/`;`/换行/反引号/`$()`）、支持 pwsh（`Select-Object -First N`）、新增 `diagnostics.sourceRewrites` 计数并接进 `/token doctor`。
 </details>
 
 <details>
