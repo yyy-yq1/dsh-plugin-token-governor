@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-token-governor",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "private": false,
   "type": "module",
   "description": "DeepSeek Harness plugin: real token-cost meter (cache hit/miss/output, peak/off-peak), prompt-cache sentinel with auto-rollback, cache-safe effort scheduling, and lossless tool-output compression. Makes every request bill visible in ¥.",

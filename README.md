@@ -188,6 +188,12 @@ POST /token-governor/api/new-session?confirm=true
 ## 版本记录
 
 <details>
+<summary>v0.18.1 — 上架物料（仅文档）</summary>
+
+新增 `docs/social-preview.png`（社交预览图）与 `docs/store-listing.md`（市场字段填写资料）；README 增加一行安装方式与"与用量看板的区别"。
+</details>
+
+<details>
 <summary>v0.18 — 上下文体积六项优化</summary>
 
 1. `/token new` 交接新会话：42 万上下文 ¥0.0084 → ¥0.0005/请求
