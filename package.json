@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-token-governor",
-  "version": "0.18.1",
+  "version": "0.19.0",
   "private": false,
   "type": "module",
   "description": "给 DeepSeek Harness 装一只账单仪表盘与省钱引擎：真实 ¥ 计费（命中/未命中/输出、峰谷）、缓存前缀哨兵与自动回滚、工具输出无损压缩、换会话省钱（−94%/请求）。",

@@ -4,6 +4,7 @@ import {
   PRICE_VERSION, PRICES_CNY, addRequest, beijingClock, cacheAnomalyCost, cacheHitPct,
   compactionEconomics, costOfUsage, costSplit, decideEffort, detectCacheAnomaly,
   emptyTotals, formatInt, formatMoney, isPeak, normalizeModelKey, resolvePrices,
+  LEDGER_DEFAULT_KEEP_FILES, LEDGER_DEFAULT_MAX_BYTES, ledgerRotationPlan, priceTableAgeDays,
 } from '../governance.js'
 
 const BEIJING = (y, month, day, hour, minute = 0) => Date.UTC(y, month - 1, day, hour - 8, minute)
@@ -166,4 +167,36 @@ test('compactionEconomics matches the flash break-even ballpark', () => {
   const prices = resolvePrices('deepseek-flash', BEIJING(2026, 11, 11, 10, 0), { currency: 'CNY' })
   const economics = compactionEconomics({ newPrefixTokens: 130000, removedTokens: 600000, prices })
   assert.ok(economics.breakEvenTurns > 9 && economics.breakEvenTurns < 12)
+})
+
+test('ledgerRotationPlan is a no-op below the limit', () => {
+  assert.deepEqual(ledgerRotationPlan('/x/ledger.jsonl', 0), [])
+  assert.deepEqual(ledgerRotationPlan('/x/ledger.jsonl', LEDGER_DEFAULT_MAX_BYTES), [])
+  assert.deepEqual(ledgerRotationPlan('', LEDGER_DEFAULT_MAX_BYTES + 1), [])
+})
+
+test('ledgerRotationPlan shifts archives then rotates the live file', () => {
+  const plan = ledgerRotationPlan('/x/ledger.jsonl', LEDGER_DEFAULT_MAX_BYTES + 1)
+  assert.deepEqual(plan[0], { op: 'unlink', path: '/x/ledger.jsonl.3' })
+  assert.deepEqual(plan[1], { op: 'rename', from: '/x/ledger.jsonl.2', to: '/x/ledger.jsonl.3' })
+  assert.deepEqual(plan[2], { op: 'rename', from: '/x/ledger.jsonl.1', to: '/x/ledger.jsonl.2' })
+  assert.deepEqual(plan.at(-1), { op: 'rename', from: '/x/ledger.jsonl', to: '/x/ledger.jsonl.1' })
+  assert.equal(plan.length, 4)
+})
+
+test('ledgerRotationPlan honours custom keepFiles', () => {
+  const plan = ledgerRotationPlan('/x/l.jsonl', 10, 5, 1)
+  assert.deepEqual(plan, [
+    { op: 'unlink', path: '/x/l.jsonl.1' },
+    { op: 'rename', from: '/x/l.jsonl', to: '/x/l.jsonl.1' },
+  ])
+  // invalid limits fall back to safe defaults rather than rotating at 0 bytes
+  assert.deepEqual(ledgerRotationPlan('/x/l.jsonl', 100, 0, 3), [])
+})
+
+test('priceTableAgeDays reads the pinned baseline date', () => {
+  const at = Date.parse('2026-11-21T12:00:00+08:00')
+  assert.equal(priceTableAgeDays(PRICE_VERSION, at), 10)
+  assert.equal(priceTableAgeDays('2026-11-11', Date.parse('2026-11-10T00:00:00+08:00')), -1)
+  assert.equal(priceTableAgeDays('not-a-date', at), null)
 })

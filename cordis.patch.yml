@@ -111,6 +111,14 @@
         guard:
           softTurnCost: 0
         apiToken: ''
+        ledger:
+          # Persistent cross-session ledger (append-only JSONL). Rotates to
+          # ledger.jsonl.1..N once it exceeds maxBytes; empty path =
+          # ~/.dsh/token-governor/ledger.jsonl.
+          enabled: true
+          path: ''
+          maxBytes: 5242880
+          keepFiles: 3
         terseVerify:
           enabled: true
           cooldownMs: 60000

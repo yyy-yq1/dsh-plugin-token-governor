@@ -29,6 +29,7 @@ import {
   compactionEconomics, costOfUsage, costSplit, decideEffort, detectCacheAnomaly, emptyTotals,
   encodeUniformJsonArray, estimateTextTokens, formatInt, formatMoney, isPeak, resolvePrices, TOKEN_RATES,
   changedToolLines, lineSimilarity, normalizeToolLine,
+  LEDGER_DEFAULT_KEEP_FILES, LEDGER_DEFAULT_MAX_BYTES, ledgerRotationPlan, priceTableAgeDays,
 } from './governance.js'
 
 export const name = 'token-governor'
@@ -160,6 +161,10 @@ const DEFAULTS = {
     // style totals). Append-only JSONL; empty path = ~/.dsh/token-governor.
     enabled: true,
     path: '',
+    // Bounded growth: rotate the live file to .1, .2, ... once it exceeds
+    // maxBytes; older generations beyond keepFiles are dropped.
+    maxBytes: LEDGER_DEFAULT_MAX_BYTES,
+    keepFiles: LEDGER_DEFAULT_KEEP_FILES,
   },
   terseVerify: {
     enabled: true,
@@ -357,6 +362,20 @@ export function apply(ctx, config) {
   // ---------- persistent usage ledger (survives restarts) ----------
   const ledger = { totals: emptyTotals(), records: 0, since: undefined, file: '', sessions: new Map() }
 
+  // ---------- self-check diagnostics (surfaced by /token doctor) ----------
+  // Cheap counters that answer "is the meter actually wired to the host right
+  // now?" — a silently broken hook would otherwise look like a cheap session.
+  const diagnostics = {
+    loadedAt: Date.now(),
+    llmStreams: 0,
+    preExecute: 0,
+    postExecute: 0,
+    lastLlmAt: undefined,
+    lastPostExecuteAt: undefined,
+    ledgerWrites: 0,
+    ledgerRotations: 0,
+  }
+
   function mergeTotalsInto(target, source) {
     for (const key of Object.keys(target)) {
       if (typeof target[key] === 'number' && typeof source?.[key] === 'number') target[key] += source[key]
@@ -382,6 +401,37 @@ export function apply(ctx, config) {
     const configured = cfg.ledger?.path
     if (typeof configured === 'string' && configured.trim().length > 0) return configured.trim()
     return path.join(os.homedir(), '.dsh', 'token-governor', 'ledger.jsonl')
+  }
+
+  function ledgerSize() {
+    try { return fs.statSync(ledger.file).size } catch { return 0 }
+  }
+
+  /**
+   * Keep the append-only ledger bounded (rotate at maxBytes, keep N archives).
+   * Best-effort: a failed rotation must never lose the record being appended.
+   */
+  function rotateLedgerIfNeeded() {
+    try {
+      const size = ledgerSize()
+      const maxBytes = Number(cfg.ledger?.maxBytes ?? LEDGER_DEFAULT_MAX_BYTES)
+      const keepFiles = cfg.ledger?.keepFiles ?? LEDGER_DEFAULT_KEEP_FILES
+      const plan = ledgerRotationPlan(ledger.file, size, maxBytes, keepFiles)
+      if (plan.length === 0) return false
+      for (const op of plan) {
+        try {
+          if (op.op === 'unlink') {
+            if (fs.existsSync(op.path)) fs.unlinkSync(op.path)
+          } else if (fs.existsSync(op.from)) {
+            fs.renameSync(op.from, op.to)
+          }
+        } catch {}
+      }
+      diagnostics.ledgerRotations += 1
+      return true
+    } catch {
+      return false
+    }
   }
 
   function loadLedger() {
@@ -441,6 +491,7 @@ export function apply(ctx, config) {
     if (ledger.since === undefined) ledger.since = rec.ts
     try {
       fs.mkdirSync(path.dirname(ledger.file), { recursive: true })
+      rotateLedgerIfNeeded()
       const entry = JSON.stringify({
         ts: rec.ts,
         sid: rec.sessionId,
@@ -461,12 +512,15 @@ export function apply(ctx, config) {
         finish: rec.finish,
       })
       fs.appendFileSync(ledger.file, entry + '\n', 'utf8')
+      diagnostics.ledgerWrites += 1
     } catch (error) {
       console.error('token-governor: ledger append failed', error)
     }
   }
 
   loadLedger()
+  // Startup rotation: a long-running install may already exceed maxBytes.
+  if (cfg.ledger?.enabled !== false) rotateLedgerIfNeeded()
   const abSegments = [{ startedAt: startedAt, compress: false, requests: 0, cost: 0, errors: 0, maxTokens: 0, toolErrors: 0 }]
   abSegments[0].compress = cfg?.toolOutput?.compressEnabled !== false
   const terseVerifications = []
@@ -640,6 +694,8 @@ export function apply(ctx, config) {
   // ---------- accounting: every streaming model call ----------
   ctx.on('llm/stream', function (options, next) {
     const ts = Date.now()
+    diagnostics.llmStreams += 1
+    diagnostics.lastLlmAt = ts
     const sessionId = typeof options?.sessionId === 'string' ? options.sessionId : undefined
     const model = typeof options?.model === 'string' ? options.model : undefined
     const provider = typeof options?.provider === 'string' ? options.provider : undefined
@@ -1372,6 +1428,7 @@ export function apply(ctx, config) {
 
   // ---------- tool call accounting ----------
   ctx.on('tools/pre-execute', async function (exec, next) {
+    diagnostics.preExecute += 1
     try {
       const name = String(exec?.name ?? '?')
       const sessionId = sessionIdOf(exec?.agent)
@@ -1404,6 +1461,8 @@ export function apply(ctx, config) {
   })
 
   ctx.on('tools/post-execute', async function (exec, result, next) {
+    diagnostics.postExecute += 1
+    diagnostics.lastPostExecuteAt = Date.now()
     const decision = await next()
     if (result?.isError === true) {
       const segment = abSegments[abSegments.length - 1]
@@ -2339,6 +2398,110 @@ export function apply(ctx, config) {
     return lines.join('\n')
   }
 
+  // ---------- self-check: is the meter actually wired to the host? ----------
+  // A silently broken hook (DSH upgrade, renamed event, missing service) looks
+  // exactly like "a cheap session", so expose explicit evidence instead.
+  function servicePresence(name) {
+    try { return ctx.get(name) !== undefined } catch { return false }
+  }
+
+  function fmtAge(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '从未'
+    const minutes = Math.floor(ms / 60000)
+    if (minutes < 1) return '刚刚'
+    if (minutes < 60) return `${minutes} 分钟前`
+    const hours = Math.floor(minutes / 60)
+    return `${hours} 小时前`
+  }
+
+  function doctorChecks() {
+    const checks = []
+    const add = (id, level, detail) => checks.push({ id, level, detail })
+    const now = Date.now()
+    const loadedMinutes = Math.max(0, Math.round((now - diagnostics.loadedAt) / 60000))
+    add('plugin', 'ok', `已加载 ${loadedMinutes} 分钟 · enabled=${cfg.enabled !== false} · currency=${cfg.currency}`)
+
+    for (const name of ['llm', 'tools', 'commands', 'agents', 'webServer']) {
+      const present = servicePresence(name)
+      let level = 'ok'
+      let detail = '可用'
+      if (!present) {
+        level = name === 'tools' || name === 'commands' ? 'fail' : 'warn'
+        detail = name === 'llm' ? '不可用：无法读取 provider usage，本会话账单不可信'
+          : name === 'webServer' ? '不可用：HTTP API/面板无数据（/token 命令仍可用）'
+            : '未就绪'
+      }
+      add(`service:${name}`, level, detail)
+    }
+
+    if (diagnostics.llmStreams > 0) {
+      add('metering:llm', 'ok', `已捕获 ${diagnostics.llmStreams} 次模型流（最近 ${fmtAge(now - (diagnostics.lastLlmAt ?? now))}）`)
+    } else if (loadedMinutes >= 5) {
+      add('metering:llm', 'fail', `加载 ${loadedMinutes} 分钟仍未捕获任何模型流；若刚跑过请求，说明 llm/stream 钩子已失效，账单数字不可信`)
+    } else {
+      add('metering:llm', 'warn', '尚未捕获模型流（刚加载，属正常）')
+    }
+
+    const hookCount = diagnostics.preExecute + diagnostics.postExecute
+    add('hooks:tools', hookCount > 0 ? 'ok' : 'warn',
+      `工具钩子 前 ${diagnostics.preExecute} / 后 ${diagnostics.postExecute}（最近后置 ${fmtAge(now - (diagnostics.lastPostExecuteAt ?? now))}）` +
+      (hookCount === 0 ? '；若已跑过工具，说明压缩/去重链路未挂上' : ''))
+
+    const size = ledgerSize()
+    let writable = true
+    try {
+      fs.mkdirSync(path.dirname(ledger.file), { recursive: true })
+      fs.accessSync(path.dirname(ledger.file), fs.constants.W_OK)
+    } catch { writable = false }
+    add('ledger', writable ? 'ok' : 'fail',
+      `${ledger.file} · ${(size / 1024).toFixed(1)} KB · 历史 ${ledger.records} 条 · 本次运行写 ${diagnostics.ledgerWrites} 条 / 轮转 ${diagnostics.ledgerRotations} 次` +
+      (writable ? '' : '（目录不可写，账本不会持久化）'))
+    const maxBytes = Number(cfg.ledger?.maxBytes ?? LEDGER_DEFAULT_MAX_BYTES)
+    const keepFiles = cfg.ledger?.keepFiles ?? LEDGER_DEFAULT_KEEP_FILES
+    add('ledger:rotation', maxBytes > 0 ? 'ok' : 'warn',
+      maxBytes > 0 ? `超过 ${(maxBytes / 1024 / 1024).toFixed(1)} MB 轮转，保留 ${keepFiles} 份归档` : 'maxBytes<=0：账本不会轮转，会无限增长')
+
+    const age = priceTableAgeDays(PRICE_VERSION, now)
+    const staleDays = Number(cfg.priceStaleDays ?? 90)
+    if (age === null) add('prices', 'warn', `价格版本 ${PRICE_VERSION} 无法解析，请检查 PRICE_VERSION`)
+    else if (staleDays > 0 && age > staleDays) add('prices', 'warn', `价格表 ${age} 天未更新（阈值 ${staleDays} 天），请核对官方价格页`)
+    else add('prices', 'ok', `价格版本 ${PRICE_VERSION}（${age} 天前）`)
+
+    add('compress', 'ok',
+      `结构压缩=${cfg.toolOutput?.compressEnabled !== false} · 近重复=${cfg.toolOutput?.nearDedupeEnabled !== false} · ` +
+      `TSV=${cfg.tsvCodec?.enabled !== false} · 读取复用=${cfg.readReuse?.enabled !== false}`)
+
+    let spill = false
+    try { spill = officialSpillActive() } catch {}
+    add('spill:official', spill ? 'ok' : 'warn',
+      spill ? `已检测到官方 spill-policy（预算 ${officialSpillBudget ?? '默认'} tokens），超大结果让路`
+        : '未检测到官方 spill-policy，超大结果由本插件兜底')
+
+    if (cfg.apiEnabled === false) {
+      add('api', 'warn', 'HTTP API 已关闭（面板与 /token 命令不受影响）')
+    } else {
+      const hasToken = typeof cfg.apiToken === 'string' && cfg.apiToken.length > 0
+      add('api', hasToken ? 'ok' : 'warn', `${cfg.apiPath} 可访问${hasToken ? '（已启用 apiToken 鉴权）' : '（未设置 apiToken；仅本机自用可接受）'}`)
+    }
+
+    return checks
+  }
+
+  function reportDoctor() {
+    const checks = doctorChecks()
+    const lines = ['Token 管家 · 自检（/token doctor）']
+    const symbol = { ok: '✅', warn: '⚠️', fail: '❌' }
+    for (const check of checks) lines.push(`${symbol[check.level] ?? '•'} ${check.id}：${check.detail}`)
+    const fails = checks.filter((check) => check.level === 'fail').length
+    const warns = checks.filter((check) => check.level === 'warn').length
+    lines.push(fails > 0
+      ? `结论：${fails} 项失败 —— 先修失败项，否则账单/缓存数字可能不可信（另 ${warns} 项提醒）。`
+      : warns > 0
+        ? `结论：可用，${warns} 项提醒（多为配置建议，不影响数字正确性）。`
+        : '结论：全部正常。')
+    return lines.join('\n')
+  }
+
   function setAutoPolicy(enabled) {
     cfg.effortPolicy.enabled = enabled
     if (enabled === true) {
@@ -2643,6 +2806,11 @@ export function apply(ctx, config) {
                 }
               }
               sendJson(res, 200, { ok: true, text: sessionId === undefined ? reportGlobal() : reportForSession(sessionId) })
+              return
+            }
+            if (req.method === 'GET' && clean.endsWith('/api/doctor')) {
+              const checks = doctorChecks()
+              sendJson(res, 200, { ok: checks.every((check) => check.level !== 'fail'), checks })
               return
             }
             if (req.method === 'GET' && (clean.endsWith('/api/report') || clean === path)) {
@@ -3069,7 +3237,7 @@ export function apply(ctx, config) {
     ctx.commands.register({
       name: 'token',
       description: CMD_DESCRIPTION,
-      input: { hint: '[auto on|auto off|prices|all|reset|handoff|new|style on|style off|ab on|ab off]' },
+      input: { hint: '[auto on|auto off|prices|doctor|all|reset|handoff|new|style on|style off|ab on|ab off]' },
       handler: async ({ agent, rawInput }) => {
         const input = String(rawInput ?? '').trim().toLowerCase()
         const sessionId = sessionIdOf(agent)
@@ -3086,6 +3254,7 @@ export function apply(ctx, config) {
           }
         }
         if (input === 'prices') return { kind: 'success', text: reportPrices() }
+        if (input === 'doctor' || input === 'check' || input === '自检') return { kind: 'success', text: reportDoctor() }
         if (input === 'handoff') return { kind: 'success', text: sessionId === undefined ? '暂无会话数据。' : reportHandoff(sessionId) }
         if (input === 'new') {
           const handoffText = sessionId === undefined ? '暂无会话数据。' : reportHandoff(sessionId)
@@ -3145,7 +3314,7 @@ export function apply(ctx, config) {
           }
           return { kind: 'success', text: '本会话的 token 管家统计已清零（不影响真实账单）。' }
         }
-        return { kind: 'error', text: `未知参数 "${rawInput}"。可用：/token、/token all、/token prices、/token auto on|off、/token reset` }
+        return { kind: 'error', text: `未知参数 "${rawInput}"。可用：/token、/token doctor、/token all、/token prices、/token auto on|off、/token reset` }
       },
     })
   } catch (error) {

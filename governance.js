@@ -501,3 +501,38 @@ export function budgetExceeded(totals, budget) {
   return spent >= limit
 }
 
+/** Default ledger rotation limits (bytes / archived generations to keep). */
+export const LEDGER_DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+export const LEDGER_DEFAULT_KEEP_FILES = 3
+
+/**
+ * Plan for rotating an append-only JSONL ledger so it never grows unbounded.
+ *
+ * Returns an ordered op list the host can apply with fs calls; an empty list
+ * means "no rotation needed". Ops are ordered oldest-first: drop the archive
+ * that would fall past `keepFiles`, shift `.N-1` -> `.N`, then move the live
+ * file to `.1`. Rotation is best-effort: a missing archive is skipped.
+ */
+export function ledgerRotationPlan(basePath, size, maxBytes = LEDGER_DEFAULT_MAX_BYTES, keepFiles = LEDGER_DEFAULT_KEEP_FILES) {
+  if (typeof basePath !== 'string' || basePath.length === 0) return []
+  const limit = Number(maxBytes)
+  const fileSize = Number(size)
+  if (!Number.isFinite(limit) || limit <= 0) return []
+  if (!Number.isFinite(fileSize) || fileSize <= limit) return []
+  const keep = Number.isFinite(Number(keepFiles)) && Number(keepFiles) > 0 ? Math.trunc(Number(keepFiles)) : LEDGER_DEFAULT_KEEP_FILES
+  const ops = [{ op: 'unlink', path: `${basePath}.${keep}` }]
+  for (let index = keep - 1; index >= 1; index -= 1) {
+    ops.push({ op: 'rename', from: `${basePath}.${index}`, to: `${basePath}.${index + 1}` })
+  }
+  ops.push({ op: 'rename', from: basePath, to: `${basePath}.1` })
+  return ops
+}
+
+/** Human-readable age in days for a YYYY-MM-DD price-table baseline. */
+export function priceTableAgeDays(version, now = Date.now()) {
+  if (typeof version !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(version)) return null
+  const stamped = Date.parse(`${version}T00:00:00+08:00`)
+  if (!Number.isFinite(stamped)) return null
+  return Math.floor((Number(now) - stamped) / 86400000)
+}
+

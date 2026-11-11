@@ -96,6 +96,7 @@ plugin_manager action=install_bundle target="<你克隆的路径>/dsh-plugin-tok
 
 ```
 /token              # 本会话：请求数、命中率、三线费用、每请求 ¥、缓存异常、决策建议
+/token doctor       # 自检：钩子/服务/账本/价格表是否真的在采数据（排障先跑这个）
 /token all          # 进程启动以来
 /token prices       # 官方价目表 + 当前高峰/空闲
 /token new          # 交接单 + 开新会话（大上下文换任务的省钱主力）
@@ -103,6 +104,10 @@ plugin_manager action=install_bundle target="<你克隆的路径>/dsh-plugin-tok
 /token ab on|off    # 压缩 A/B 分段
 /token auto on|off  # effort 调度开关（默认关）
 ```
+
+> **`/token doctor` 是信任前提**：DSH 升级后钩子可能静默失效，表现是"这个会话好便宜"。
+> 自检会逐项列出 `llm/stream` 是否收到过数据、工具钩子是否触发、账本是否可写、价格表是否过期——
+> 有任何 ❌ 就先别信账单数字。
 
 `/token` 输出示意（数据来自一次真实会话）：
 
@@ -120,6 +125,7 @@ HTTP（自建看板 / 接 Grafana）：
 
 ```bash
 GET  /token-governor/api/report           # 结构化 JSON: 总消耗/命中/未命中/输出/请求数/分会话
+GET  /token-governor/api/doctor           # 自检结果 JSON（ok + checks[]）
 GET  /token-governor/api/text?session=<id>
 GET  /token-governor/api/handoff
 POST /token-governor/api/new-session?confirm=true
@@ -135,6 +141,24 @@ POST /token-governor/api/new-session?confirm=true
 │ 总消耗 29.39M tok   命中 29.28M  未命中 42k │
 │ 决策：换任务 → /token new（−94%/请求）      │
 └────────────────────────────────────────────┘
+```
+
+## 自检与自维护（v0.19）
+
+- **`/token doctor`**：逐项检查——`llm/stream` 是否收到过数据、工具钩子是否触发、`tools/commands/webServer/llm/agents` 服务是否可用、
+  账本目录是否可写、账本是否轮转、价格表是否过期、官方 `spill-policy` 是否被识别、HTTP API 是否开到公网。
+  任何 ❌ 都意味着"数字可能是假的"，先修再信。
+- **账本自动轮转**：JSONL 超过 `ledger.maxBytes`（默认 5 MB）就滚成 `.1`、`.2`…，只保留 `ledger.keepFiles`（默认 3）份，
+  启动时也会检查一次。长期挂机不会把账本养成几十 MB。
+
+```yaml
+- id: token-governor
+  config:
+    ledger:
+      enabled: true
+      path: ''                # 空 = ~/.dsh/token-governor/ledger.jsonl
+      maxBytes: 5242880       # 5 MB 轮转
+      keepFiles: 3            # 保留 ledger.jsonl.1 ~ .3
 ```
 
 ## 三个反直觉实测（用真实 tokenizer / 真实账单，不是估算）
@@ -186,6 +210,13 @@ POST /token-governor/api/new-session?confirm=true
 - 统计口径是"插件看到的请求"，与官方账单可能有极小偏差，以官方为准。
 
 ## 版本记录
+
+<details>
+<summary>v0.19.0 — 自检与账本轮转</summary>
+
+新增 `/token doctor`（及 `GET /api/doctor`）：检查 llm 钩子是否在采数据、工具钩子是否触发、宿主服务是否可用、账本是否可写、价格表是否过期、官方 spill 是否识别。
+账本按 `ledger.maxBytes`（默认 5 MB）轮转、保留 `ledger.keepFiles`（默认 3）份；启动时也检查一次。单测 25 项。
+</details>
 
 <details>
 <summary>v0.18.1 — 上架物料（仅文档）</summary>
@@ -263,7 +294,7 @@ prompt 风格实验、子会话模型路由、分支/前缀审计、compaction d
 
 - 发现价格错误 / 计费口径偏差：开 issue，附官方价目页与模型名。
 - 想加新的压缩编码：`governance.js` 是纯函数层（无 DSH 依赖），`npm test` 直接测。
-- 测试：`npm test`（21 项全绿）。
+- 测试：`npm test`（25 项全绿）。
 
 ## License
 
