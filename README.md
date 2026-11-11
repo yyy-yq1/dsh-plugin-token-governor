@@ -5,6 +5,8 @@
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blueviolet)](https://github.com/yyy-yq1/dsh-plugin-token-governor)
 [![Stars](https://img.shields.io/github/stars/yyy-yq1/dsh-plugin-token-governor?style=social)](https://github.com/yyy-yq1/dsh-plugin-token-governor)
 
+![Token 管家：DeepSeek Harness 的账单仪表盘](docs/social-preview.png)
+
 > **给 DeepSeek Harness 装一只"费率表 + 缓存哨兵 + 输出压缩器"：每一分钱花在哪、下一次哪笔会白烧、哪些 token 本可以不发，全部变成看得见的数字。**
 
 DeepSeek Harness (DSH) plugin that turns your token bill into observable, actionable numbers:
@@ -73,15 +75,22 @@ cache-safe reasoning-effort scheduling, and lossless tool-output compression.
 git clone https://github.com/yyy-yq1/dsh-plugin-token-governor.git
 ```
 
-然后用 DSH 的插件管理器装它（**不要手写 profile 的 `package.json` / `cordis.patch.yml`**）：
+装（**不要手写 profile 的 `package.json` / `cordis.patch.yml`**），任选一种：
 
-```
+```bash
+# ① 官方 CLI，直接从 Git 安装
+dsh plugin --profile web add 'git+https://github.com/yyy-yq1/dsh-plugin-token-governor.git'
+
+# ② 插件管理器（本机已 clone）
 plugin_manager action=install_bundle target="<你克隆的路径>/dsh-plugin-token-governor"
 ```
 
 装完即可用，无需配置：
 - `/token` — 看本会话真实账单
 - 设置 →「缓存与成本」面板（不产生模型请求；没显示就 F5）
+
+> 和「用量看板」类插件的区别：它们回答"花了多少"，本插件回答**"为什么这么贵、下一次哪笔会白烧、怎么让同样任务更便宜"**。
+> 计费、缓存失效、工具输出压缩、换会话，四件事是同一个成本问题的四个面。
 
 ## 日常用法
 
