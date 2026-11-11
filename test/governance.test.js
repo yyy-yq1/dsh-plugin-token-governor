@@ -5,6 +5,7 @@ import {
   compactionEconomics, costOfUsage, costSplit, decideEffort, detectCacheAnomaly,
   emptyTotals, formatInt, formatMoney, isPeak, normalizeModelKey, resolvePrices,
   LEDGER_DEFAULT_KEEP_FILES, LEDGER_DEFAULT_MAX_BYTES, ledgerRotationPlan, priceTableAgeDays,
+  firstShellToken, isSimpleShellCommand, outputLimitSuffix,
 } from '../governance.js'
 
 const BEIJING = (y, month, day, hour, minute = 0) => Date.UTC(y, month - 1, day, hour - 8, minute)
@@ -199,4 +200,27 @@ test('priceTableAgeDays reads the pinned baseline date', () => {
   assert.equal(priceTableAgeDays(PRICE_VERSION, at), 10)
   assert.equal(priceTableAgeDays('2026-11-11', Date.parse('2026-11-10T00:00:00+08:00')), -1)
   assert.equal(priceTableAgeDays('not-a-date', at), null)
+})
+
+test('isSimpleShellCommand only accepts single simple commands', () => {
+  assert.equal(isSimpleShellCommand('cat app.log'), true)
+  assert.equal(isSimpleShellCommand('  git status  '), true)
+  assert.equal(isSimpleShellCommand('cat a.log | tail -n 5'), false)
+  assert.equal(isSimpleShellCommand('cat a.log > out.txt'), false)
+  assert.equal(isSimpleShellCommand('cat a.log && cat b.log'), false)
+  assert.equal(isSimpleShellCommand('cat a.log; echo done'), false)
+  assert.equal(isSimpleShellCommand('echo `whoami`'), false)
+  assert.equal(isSimpleShellCommand('echo $(whoami)'), false)
+  assert.equal(isSimpleShellCommand('cat a.log\nrm -rf /'), false)
+  assert.equal(isSimpleShellCommand(''), false)
+  assert.equal(isSimpleShellCommand(undefined), false)
+})
+
+test('outputLimitSuffix picks a shell-appropriate cap', () => {
+  assert.equal(outputLimitSuffix('bash', 400), ' | head -n 400')
+  assert.equal(outputLimitSuffix('run_command', 50), ' | head -n 50')
+  assert.equal(outputLimitSuffix('pwsh', 400), ' | Select-Object -First 400')
+  assert.equal(outputLimitSuffix('pwsh', 0), null)
+  assert.equal(outputLimitSuffix('read', 400), null)
+  assert.equal(firstShellToken('  Git status'), 'git')
 })

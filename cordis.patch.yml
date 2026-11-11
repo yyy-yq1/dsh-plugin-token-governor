@@ -155,9 +155,10 @@
           lowOutputBelowTokens: 250
           downshiftEffort: 'low'
         sourceLimits:
-          # EXPERIMENTAL, default off: append `| head -n N` to allow-listed
-          # read-only shell commands without pipes. Changes command semantics
-          # (exit code becomes head's).
+          # EXPERIMENTAL, default off: append a shell-appropriate output cap to a
+          # single simple command (no pipe/redirect/operator): bash -> `| head -n
+          # N`, pwsh -> `| Select-Object -First N`. Changes command semantics
+          # (exit code becomes the cap's) and the truncated tail is NOT spilled.
           enabled: false
           bashHeadLines: 400
           allowlist:

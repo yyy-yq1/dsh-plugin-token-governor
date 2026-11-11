@@ -153,7 +153,7 @@ POST /token-governor/api/new-session?confirm=true
 | ② | **压缩覆盖扩展** | 开 | 新增 glob/ls/find/tree 路径清单的步进采样；aggressive 阈值 4000→**2500**、目标 0.35→**0.3** |
 | ③ | **短输出续步降 effort** | 开 | 上一步输出 <250 tokens（典型"只调个工具"）→ 后续步骤降为 `low`；出错升级、轮末恢复；`/token` 显示降档 vs 其他平均输出 |
 | ④ | **工具固定税裁剪** | 手动 | `/token trim` 找出"声明了但从没调用"的工具，对**新会话**禁用（不动运行中会话的工具声明，避免缓存失效） |
-| ⑤ | **源头限流**（实验） | **关** | 对 `cat/ls/git/grep…` 这类只读命令，若无管道则追加 `| head -n 400`；会改变退出码语义，确认后再开 |
+| ⑤ | **源头限流**（实验） | **关** | 对 `cat/ls/git/grep…` 这类只读的**单条简单命令**（不含管道/重定向/`&&`/`;`/反引号）追加输出上限：bash→`\| head -n 400`，pwsh→`\| Select-Object -First 400`；会改变退出码语义，且截断内容不可回取 |
 
 > ②③ 都不改写历史：压缩发生在结果进入上下文时，effort 不进 prompt，缓存命中不受影响。
 > ③ 的收益需要你观察 `/token` 里"输出治理"那行的两组平均输出；若降档后没变小，就 `/token out off`。
@@ -225,6 +225,12 @@ POST /token-governor/api/new-session?confirm=true
 - 统计口径是"插件看到的请求"，与官方账单可能有极小偏差，以官方为准。
 
 ## 版本记录
+
+<details>
+<summary>v0.20.1 — 源头限流补强</summary>
+
+⑤ 收紧触发条件（单条简单命令：排除管道/重定向/`&&`/`;`/换行/反引号/`$()`）、支持 pwsh（`Select-Object -First N`）、新增 `diagnostics.sourceRewrites` 计数并接进 `/token doctor`。单测 28 项。
+</details>
 
 <details>
 <summary>v0.20.0 — 五项再省</summary>

@@ -536,3 +536,36 @@ export function priceTableAgeDays(version, now = Date.now()) {
   return Math.floor((Number(now) - stamped) / 86400000)
 }
 
+/**
+ * True when a shell command is a single simple command: no pipe, redirect,
+ * background/sequential operator, newline, backtick, or command substitution.
+ * Source-side output limiting is only safe for these, because appending a pipe
+ * to a compound command would limit only its last segment.
+ */
+export function isSimpleShellCommand(command) {
+  if (typeof command !== 'string') return false
+  const trimmed = command.trim()
+  if (trimmed.length === 0) return false
+  return !/[|><&;`\n\r]|\$\(/.test(trimmed)
+}
+
+/** First whitespace-delimited token of a command, lower-cased. */
+export function firstShellToken(command) {
+  if (typeof command !== 'string') return ''
+  return command.trim().split(/\s+/)[0].toLowerCase()
+}
+
+/**
+ * Shell-specific suffix that caps a command's output to `lines`, or null when
+ * the tool's shell is not supported. bash-like: `| head -n N`;
+ * PowerShell: `| Select-Object -First N`.
+ */
+export function outputLimitSuffix(toolName, lines) {
+  const n = Number(lines)
+  if (!Number.isFinite(n) || n <= 0) return null
+  const count = Math.max(20, Math.trunc(n))
+  if (toolName === 'bash' || toolName === 'shell' || toolName === 'run_command') return ` | head -n ${count}`
+  if (toolName === 'pwsh' || toolName === 'powershell' || toolName === 'shell_pwsh') return ` | Select-Object -First ${count}`
+  return null
+}
+

@@ -30,6 +30,7 @@ import {
   encodeUniformJsonArray, estimateTextTokens, formatInt, formatMoney, isPeak, resolvePrices, TOKEN_RATES,
   changedToolLines, lineSimilarity, normalizeToolLine,
   LEDGER_DEFAULT_KEEP_FILES, LEDGER_DEFAULT_MAX_BYTES, ledgerRotationPlan, priceTableAgeDays,
+  firstShellToken, isSimpleShellCommand, outputLimitSuffix,
 } from './governance.js'
 
 export const name = 'token-governor'
@@ -398,6 +399,8 @@ export function apply(ctx, config) {
     lastPostExecuteAt: undefined,
     ledgerWrites: 0,
     ledgerRotations: 0,
+    sourceRewrites: 0,
+    lastSourceRewriteAt: undefined,
   }
 
   function mergeTotalsInto(target, source) {
@@ -1501,22 +1504,27 @@ export function apply(ctx, config) {
     diagnostics.preExecute += 1
     // Source-side limiting (opt-in, default off): stop an allow-listed read-only
     // command from dumping thousands of lines that we would only compress after
-    // the fact. Only patches a plain command with no pipe/redirect, so existing
-    // semantics-aware commands are left alone.
+    // the fact. Only a single simple command (no pipes/redirects/operators) is
+    // patched, so no compound-command segment escapes the cap.
     try {
       const limits = cfg.sourceLimits
       const name = String(exec?.name ?? '')
-      if (limits?.enabled === true && (name === 'bash' || name === 'shell' || name === 'run_command')) {
+      if (limits?.enabled === true) {
+        const suffix = outputLimitSuffix(name, limits.bashHeadLines ?? 400)
         const holder = exec?.input ?? exec?.args ?? exec?.arguments
-        const command = holder?.command ?? holder?.cmd
-        if (typeof command === 'string' && command.trim().length > 0 && !/[|>]/.test(command)) {
-          const first = command.trim().split(/\s+/)[0].toLowerCase()
-          const allow = Array.isArray(limits.allowlist) ? limits.allowlist : []
-          if (allow.includes(first)) {
-            const head = Math.max(20, Number(limits.bashHeadLines ?? 400))
-            const patched = `${command} | head -n ${head}`
-            if (typeof holder.command === 'string') holder.command = patched
-            else if (typeof holder.cmd === 'string') holder.cmd = patched
+        if (suffix !== null && holder !== null && typeof holder === 'object') {
+          const key = typeof holder.command === 'string' ? 'command'
+            : typeof holder.cmd === 'string' ? 'cmd' : undefined
+          if (key !== undefined && isSimpleShellCommand(holder[key])) {
+            const first = firstShellToken(holder[key])
+            const allow = Array.isArray(limits.allowlist)
+              ? limits.allowlist.map((entry) => String(entry).toLowerCase())
+              : []
+            if (allow.includes(first)) {
+              holder[key] = holder[key] + suffix
+              diagnostics.sourceRewrites += 1
+              diagnostics.lastSourceRewriteAt = Date.now()
+            }
           }
         }
       }
@@ -2609,6 +2617,16 @@ export function apply(ctx, config) {
     add('compress', 'ok',
       `结构压缩=${cfg.toolOutput?.compressEnabled !== false} · 近重复=${cfg.toolOutput?.nearDedupeEnabled !== false} · ` +
       `TSV=${cfg.tsvCodec?.enabled !== false} · 读取复用=${cfg.readReuse?.enabled !== false}`)
+
+    const limits = cfg.sourceLimits
+    if (limits?.enabled === true) {
+      add('sourceLimits', 'ok',
+        `源头限流已开启：本次改写 ${diagnostics.sourceRewrites} 条命令` +
+        `（bash→head -n / pwsh→Select-Object -First ${limits.bashHeadLines ?? 400}）` +
+        `；被截断的原文不会落盘`)
+    } else {
+      add('sourceLimits', 'warn', '源头限流关闭（实验功能；开启后会改变命令语义，且截断内容不可回取）')
+    }
 
     let spill = false
     try { spill = officialSpillActive() } catch {}
