@@ -199,8 +199,29 @@ const DEFAULTS = {
   },
   compressionBudget: {
     // Above this estimated-token size, compress harder than the normal target.
-    aggressiveAboveTokens: 4000,
-    aggressiveTargetRatio: 0.35,
+    // Lowered from 4000 to 2500 in v0.19: mid-size results are the bulk of
+    // context growth, and the extra compression is still reversible (locator).
+    aggressiveAboveTokens: 2500,
+    aggressiveTargetRatio: 0.3,
+  },
+  outputGuard: {
+    // Short-output continuation downshift: when the previous main step produced
+    // fewer than `lowOutputBelowTokens` output tokens (typical "just call the
+    // next tool" steps), schedule the following steps at `downshiftEffort`.
+    // Restored at turn end / after an error, and measured against unguarded
+    // steps so the evidence stays visible in /token.
+    enabled: true,
+    lowOutputBelowTokens: 250,
+    downshiftEffort: 'low',
+  },
+  sourceLimits: {
+    // EXPERIMENTAL, opt-in: append `| head -n N` to allow-listed read-only
+    // shell commands that would otherwise dump thousands of lines. Only
+    // applies to a command with no existing pipe/redirect. Default off: it
+    // changes command semantics (exit code becomes head's).
+    enabled: false,
+    bashHeadLines: 400,
+    allowlist: ['cat', 'ls', 'dir', 'find', 'tree', 'git', 'grep', 'rg', 'npm', 'pnpm', 'pip', 'docker', 'kubectl', 'journalctl', 'wc'],
   },
   growth: {
     enabled: true,
@@ -240,6 +261,9 @@ const CMD_DESCRIPTION = '查看/控制 token 成本核算与思考强度调度�
 
 /** Token ids that are billed per successful call by the DeepSeek web API. */
 const SEARCH_TOOLS = new Set(['web_search', 'web_fetch', 'web-search', 'web-fetch'])
+
+/** Tool names whose output is typically a long one-item-per-line path listing. */
+const LIST_TOOL_RE = /^(glob|ls|list|tree|dir|find|fd|paths|list_dir)$/i
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -579,6 +603,10 @@ export function apply(ctx, config) {
         aggressiveCompressed: 0,
         peakCost: 0,
         offPeakCost: 0,
+        // Output governance evidence: was the previous main step cheap, and how
+        // big are guarded vs unguarded outputs (rough A/B, same session).
+        lastMainOutputTokens: undefined,
+        outputGuard: { downshifts: 0, guardedRequests: 0, guardedOutput: 0, otherRequests: 0, otherOutput: 0 },
         cache: {
           prevPromptTokens: 0,
           promptSumTokens: 0,
@@ -639,6 +667,11 @@ export function apply(ctx, config) {
         budgetWarnedTurn: undefined,
         effortRiskSuspended: false,
         ourSelects: [], // {effort, ts} to distinguish our own model/selection events
+        // Short-output continuation downshift state (outputGuard).
+        outputDownshifted: false,
+        outputGuardedStep: false,
+        outputDownshiftCount: 0,
+        outputRestoredAt: undefined,
       }
       agents.set(sessionId, state)
     }
@@ -853,6 +886,18 @@ export function apply(ctx, config) {
       styleEntry.requests += 1
       styleEntry.outputTokens += rec.outputTokens
       if (rec.finish === 'error' || rec.finish === 'aborted') styleEntry.errors += 1
+      // Output governance: remember the size of the last main output (the next
+      // step's downshift decision) and keep a rough guarded/unguarded A/B.
+      state.lastMainOutputTokens = rec.outputTokens
+      const policyState = agents.get(sessionId)
+      if (policyState?.outputGuardedStep === true) {
+        state.outputGuard.guardedRequests += 1
+        state.outputGuard.guardedOutput += rec.outputTokens
+        policyState.outputGuardedStep = false
+      } else {
+        state.outputGuard.otherRequests += 1
+        state.outputGuard.otherOutput += rec.outputTokens
+      }
       // Context-growth attribution: prompt delta since the previous request,
       // attributed to tool results when the tool count grew.
       if (cfg.growth?.enabled !== false) {
@@ -1257,6 +1302,26 @@ export function apply(ctx, config) {
             applyEffort(agent, sessionId, decision.reasoningEffort, decision.reason)
           }
         }
+        // ---------- output governance: cheap steps get a cheaper effort ----------
+        // Only continuation steps (payload.step > 1) whose PREVIOUS main output was
+        // very short ("just call the next tool" steps) are downshifted; errors
+        // escalate, and turn end restores. Guarded vs unguarded output is tracked
+        // so /token can show whether it actually saved tokens.
+        const outGuard = cfg.outputGuard
+        if (outGuard?.enabled !== false && policyState.effortRiskSuspended !== true &&
+          payload.step > 1 && policyState.escalatedTurn !== payload.turn &&
+          state.lastMainOutputTokens !== undefined &&
+          state.lastMainOutputTokens < (outGuard.lowOutputBelowTokens ?? 250)) {
+          const target = ['off', 'low', 'high'].includes(outGuard.downshiftEffort) ? outGuard.downshiftEffort : 'low'
+          const before = selection?.reasoningEffort ?? state.effort.currentEffort
+          if (before !== target) {
+            applyEffort(agent, sessionId, target, `short-step downshift (prev output ${state.lastMainOutputTokens} tokens)`)
+            policyState.outputDownshifted = true
+            policyState.outputGuardedStep = true
+            policyState.outputDownshiftCount += 1
+            state.outputGuard.downshifts += 1
+          }
+        }
         // ---------- budget protection: same task, less money ----------
         const budget = cfg.budget
         if (budget !== undefined && budget.mode !== 'off' && budget.mode !== undefined && policyState.effortRiskSuspended !== true) {
@@ -1396,11 +1461,16 @@ export function apply(ctx, config) {
       const policyState = ensureAgent(sessionId, agent)
       const effortRestore = cfg.effortPolicy?.enabled !== false && cfg.effortPolicy?.restoreAtTurnEnd !== false
       const budgetRestore = cfg.budget?.mode === 'turn' && policyState.budgetDownshifted === true
-      if (effortRestore || budgetRestore) {
+      const outputRestore = cfg.outputGuard?.enabled !== false && policyState.outputDownshifted === true
+      if (effortRestore || budgetRestore || outputRestore) {
         if (policyState.originalEffort !== undefined) {
           applyEffort(agent, sessionId, policyState.originalEffort, 'restore at turn end')
         }
         if (budgetRestore) policyState.budgetDownshifted = false
+        if (outputRestore) {
+          policyState.outputDownshifted = false
+          policyState.outputRestoredAt = Date.now()
+        }
       }
     } catch (error) {
       console.error('token-governor: turn-stopping restore failed', error)
@@ -1429,6 +1499,30 @@ export function apply(ctx, config) {
   // ---------- tool call accounting ----------
   ctx.on('tools/pre-execute', async function (exec, next) {
     diagnostics.preExecute += 1
+    // Source-side limiting (opt-in, default off): stop an allow-listed read-only
+    // command from dumping thousands of lines that we would only compress after
+    // the fact. Only patches a plain command with no pipe/redirect, so existing
+    // semantics-aware commands are left alone.
+    try {
+      const limits = cfg.sourceLimits
+      const name = String(exec?.name ?? '')
+      if (limits?.enabled === true && (name === 'bash' || name === 'shell' || name === 'run_command')) {
+        const holder = exec?.input ?? exec?.args ?? exec?.arguments
+        const command = holder?.command ?? holder?.cmd
+        if (typeof command === 'string' && command.trim().length > 0 && !/[|>]/.test(command)) {
+          const first = command.trim().split(/\s+/)[0].toLowerCase()
+          const allow = Array.isArray(limits.allowlist) ? limits.allowlist : []
+          if (allow.includes(first)) {
+            const head = Math.max(20, Number(limits.bashHeadLines ?? 400))
+            const patched = `${command} | head -n ${head}`
+            if (typeof holder.command === 'string') holder.command = patched
+            else if (typeof holder.cmd === 'string') holder.cmd = patched
+          }
+        }
+      }
+    } catch (error) {
+      console.error('token-governor: source limit rewrite failed', error)
+    }
     try {
       const name = String(exec?.name ?? '?')
       const sessionId = sessionIdOf(exec?.agent)
@@ -1635,9 +1729,9 @@ export function apply(ctx, config) {
     // Compress harder for very large results so one output cannot raise the
     // whole session's context watermark.
     const approxTextTokens = estimateTextTokens(text)
-    const aggressiveBudget = approxTextTokens >= (cfg.compressionBudget?.aggressiveAboveTokens ?? 4000)
+    const aggressiveBudget = approxTextTokens >= (cfg.compressionBudget?.aggressiveAboveTokens ?? 2500)
     const aggressiveTarget = aggressiveBudget
-      ? (cfg.compressionBudget?.aggressiveTargetRatio ?? 0.35)
+      ? (cfg.compressionBudget?.aggressiveTargetRatio ?? 0.3)
       : 1
     let body
     let structured = false
@@ -1658,6 +1752,11 @@ export function apply(ctx, config) {
         if (toolName === 'grep' || toolName === 'grep_search' || toolName === 'search') {
           return { targetRatio: 0.5, diverse: true }
         }
+        // Path listings (glob/ls/find/tree) are one-item-per-line: uniform
+        // stride sampling is safe and keeps head+tail for orientation.
+        if (LIST_TOOL_RE.test(toolName)) {
+          return { targetRatio: out.listTargetRatio ?? 0.45 }
+        }
         return { targetRatio: out.tabularTargetRatio ?? 0.5, landmarks: errorRe }
       })()
       const tabHeadRows = Math.min(out.tabularHeadRows ?? 40, Math.max(2, Math.floor(lines.length * 0.3)))
@@ -1666,7 +1765,7 @@ export function apply(ctx, config) {
       const tabTail = lines.slice(-tabTailRows)
       const tabMiddle = lines.slice(tabHeadRows, lines.length - tabTailRows)
       if (tabMiddle.length > 0 && out.tabularEnabled !== false &&
-        (looksStructured(lines) || (profile.landmarks !== undefined && lines.length >= 60))) {
+        (looksStructured(lines) || LIST_TOOL_RE.test(toolName) || (profile.landmarks !== undefined && lines.length >= 60))) {
         keepErrorNeighbours(tabMiddle, tabHead.length)
         const landmarkLines = []
         if (toolName === 'read' && profile.landmarks !== undefined) {
@@ -1917,6 +2016,39 @@ export function apply(ctx, config) {
   }, { prepend: true })
 
   // ---------- reporting ----------
+  /** Tools the global history never called, sized for schema tax (new sessions). */
+  function globalTrimCandidates() {
+    const unique = new Map()
+    for (const state of sessions.values()) {
+      for (const tool of state.surface?.toolSizes ?? []) if (!unique.has(tool.name)) unique.set(tool.name, tool)
+    }
+    return [...unique.values()]
+      .filter((tool) => (globalToolCalls.byName[tool.name] ?? 0) === 0 && tool.chars >= 300)
+      .map((tool) => ({ name: tool.name, tokens: Math.round(tool.chars / 4) }))
+      .sort((a, b) => b.tokens - a.tokens)
+  }
+
+  function reportTrim() {
+    const minRequests = cfg.toolBudget?.minRequests ?? 15
+    if (globalTotals.requests < minRequests) {
+      return `样本不足：需要 ≥${minRequests} 个主请求才能判断“从未调用”，否则会误删有用的工具。`
+    }
+    const list = globalTrimCandidates()
+    if (list.length === 0) return '当前没有“声明了但从不调用”的工具，无需裁剪。'
+    const total = list.reduce((sum, tool) => sum + tool.tokens, 0)
+    cfg.toolBudget.enabled = true
+    cfg.toolBudget.deny = [...new Set([...(cfg.toolBudget.deny ?? []), ...list.map((tool) => tool.name)])]
+    return [
+      `工具固定税裁剪：已对**之后创建的新会话**禁用 ${list.length} 个从未调用的工具（≈${formatInt(total)} tokens/请求）。`,
+      '运行中会话不改工具声明（改了会让前缀缓存整段失效），所以当前会话数字不变。',
+      '持久化：把下面这段写进 bundle 行 config 后重启——',
+      'toolBudget:',
+      '  enabled: true',
+      '  deny: [' + list.map((tool) => `'${tool.name}'`).join(', ') + ']',
+      '撤销：/token trim off',
+    ].join('\n')
+  }
+
   /** Tools the session never called, sized for schema tax (cache-principle). */
   function unusedToolCandidates(state) {
     const minCalls = cfg.toolBudget?.minToolCalls ?? 20
@@ -2159,7 +2291,14 @@ export function apply(ctx, config) {
       }
       if ((state.toolOut.aggressiveCompressed ?? 0) > 0) {
         lines.push(`压缩预算：${state.toolOut.aggressiveCompressed} 次大结果按 ≤` +
-          `${Math.round((cfg.compressionBudget?.aggressiveTargetRatio ?? 0.35) * 100)}% 目标压缩`)
+          `${Math.round((cfg.compressionBudget?.aggressiveTargetRatio ?? 0.3) * 100)}% 目标压缩`)
+      }
+      if ((state.outputGuard?.downshifts ?? 0) > 0) {
+        const guard = state.outputGuard
+        const guardedAvg = guard.guardedRequests > 0 ? Math.round(guard.guardedOutput / guard.guardedRequests) : 0
+        const otherAvg = guard.otherRequests > 0 ? Math.round(guard.otherOutput / guard.otherRequests) : 0
+        lines.push(`输出治理：短步骤降 effort ${guard.downshifts} 次；降档后平均输出 ${guardedAvg} tok/请求` +
+          `（n=${guard.guardedRequests}） vs 其他 ${otherAvg}（n=${guard.otherRequests}）`)
       }
       if (Array.isArray(state.growth) && state.growth.length > 0) {
         const total = state.growth.reduce((sum, entry) => sum + entry.delta, 0)
@@ -3255,6 +3394,19 @@ export function apply(ctx, config) {
         }
         if (input === 'prices') return { kind: 'success', text: reportPrices() }
         if (input === 'doctor' || input === 'check' || input === '自检') return { kind: 'success', text: reportDoctor() }
+        if (input === 'trim' || input === 'trim on') return { kind: 'success', text: reportTrim() }
+        if (input === 'trim off') {
+          cfg.toolBudget.enabled = false
+          return { kind: 'success', text: '工具裁剪：已关闭（对之后创建的新会话生效，运行中会话不变）。' }
+        }
+        if (input === 'out on' || input === 'out off') {
+          cfg.outputGuard.enabled = input === 'out on'
+          return {
+            kind: 'success',
+            text: `输出治理：已${input === 'out on' ? '开启' : '关闭'}——短输出续步降 effort（默认 low），出错升级、轮末恢复。` +
+              '效果用 /token 里的“输出治理”行对比（降档后 vs 其他平均输出）。',
+          }
+        }
         if (input === 'handoff') return { kind: 'success', text: sessionId === undefined ? '暂无会话数据。' : reportHandoff(sessionId) }
         if (input === 'new') {
           const handoffText = sessionId === undefined ? '暂无会话数据。' : reportHandoff(sessionId)

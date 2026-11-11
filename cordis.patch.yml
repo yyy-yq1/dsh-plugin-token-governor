@@ -142,8 +142,39 @@
         readReuse:
           enabled: true
         compressionBudget:
-          aggressiveAboveTokens: 4000
-          aggressiveTargetRatio: 0.35
+          # Compress harder above this size; 2500 (was 4000) catches the
+          # mid-size results that drive most of the context growth.
+          aggressiveAboveTokens: 2500
+          aggressiveTargetRatio: 0.3
+        outputGuard:
+          # Cheap-step downshift: when the previous main step emitted fewer than
+          # lowOutputBelowTokens tokens, run following steps at downshiftEffort.
+          # Restored at turn end / after errors; guarded vs unguarded output is
+          # compared in /token.
+          enabled: true
+          lowOutputBelowTokens: 250
+          downshiftEffort: 'low'
+        sourceLimits:
+          # EXPERIMENTAL, default off: append `| head -n N` to allow-listed
+          # read-only shell commands without pipes. Changes command semantics
+          # (exit code becomes head's).
+          enabled: false
+          bashHeadLines: 400
+          allowlist:
+            - cat
+            - ls
+            - find
+            - tree
+            - git
+            - grep
+            - rg
+            - npm
+            - pnpm
+            - pip
+            - docker
+            - kubectl
+            - journalctl
+            - wc
         growth:
           enabled: true
           maxEntries: 80

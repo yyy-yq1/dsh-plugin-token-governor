@@ -62,6 +62,8 @@ window.__ModuleLoader__.load({
         growthRow: '上下文增长',
         growthSub: '最近 10 步 · 重复读取复用 {r} 次',
         handoffBtn: '生成交接单',
+        newSessionBtn: '换新会话（省 ¥）',
+        newSessionOk: '已建新会话 {id}，交接单已投递',
         verifyBtn: '验证简洁风格注入',
         totalsCard: '总消耗 Tokens（跨会话/跨重启累计）',
         totalTokens: '总消耗 Tokens',
@@ -159,6 +161,8 @@ window.__ModuleLoader__.load({
         growthRow: 'Context growth',
         growthSub: 'last 10 steps · read-reuse {r}',
         handoffBtn: 'Handoff note',
+        newSessionBtn: 'New session (save ¥)',
+        newSessionOk: 'New session {id} created, handoff posted',
         verifyBtn: 'Verify terse-style injection',
         totalsCard: 'Total tokens (all sessions, persisted)',
         totalTokens: 'Total consumed tokens',
@@ -420,6 +424,7 @@ window.__ModuleLoader__.load({
       const [trimNotice, setTrimNotice] = React.useState('')
       const [handoffText, setHandoffText] = React.useState('')
       const [verifyText, setVerifyText] = React.useState('')
+      const [newSessionText, setNewSessionText] = React.useState('')
 
       const snapshot = state.data
       const session = pickSession(snapshot)
@@ -480,6 +485,17 @@ window.__ModuleLoader__.load({
             ? T('verifyOk', { id: (result.sessionId || '?').slice(-8) })
             : T('verifyFail')))
           .catch(() => setVerifyText(T('error')))
+      }
+      // One-click session handoff: creates a fresh session and posts the handoff
+      // note into it (the -94%/-request lever for large contexts).
+      const doNewSession = () => {
+        const id = session && session.session ? encodeURIComponent(session.session) : ''
+        setNewSessionText('…')
+        apiPost('/new-session' + (id ? '?session=' + id : ''), { confirm: true })
+          .then((result) => setNewSessionText(result && result.ok !== false
+            ? T('newSessionOk', { id: String(result.sessionId || '?').slice(-8) })
+            : T('error')))
+          .catch(() => setNewSessionText(T('error')))
       }
 
       const kpis = [        { label: T('hitRate'), value: hitPct === undefined ? '—' : Number(hitPct).toFixed(2) + '%', sub: T('session') + ' ' + (session ? session.session : '—') },
@@ -647,9 +663,11 @@ window.__ModuleLoader__.load({
               ),
             ),
             h('div', { className: 'tg-row', style: { marginTop: '8px' } },
+              h('button', { className: 'tg-btn', onClick: doNewSession, type: 'button' }, T('newSessionBtn')),
               h('button', { className: 'tg-btn', onClick: doHandoff, type: 'button' }, T('handoffBtn')),
               h('button', { className: 'tg-btn', onClick: doVerify, type: 'button' }, T('verifyBtn')),
               verifyText ? h('span', { className: 'tg-dim' }, verifyText) : null,
+              newSessionText ? h('span', { className: 'tg-dim' }, newSessionText) : null,
             ),
             handoffText ? h('pre', { className: 'tg-pre' }, handoffText) : null,
           )
